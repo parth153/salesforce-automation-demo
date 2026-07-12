@@ -1,0 +1,15 @@
+# Standard SFDX ignore patterns
+**/jsconfig.json
+**/.eslintrc.json
+**/package.json
+**/package-lock.json
+
+# LWC configuration files
+**/__tests__/**
+
+# Playwright / non-SF project files (this repo also hosts Playwright tests)
+node_modules/**
+test-results/**
+playwright-report/**
+tests/**
+specs/**

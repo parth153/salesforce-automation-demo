@@ -1,0 +1,243 @@
+name: CI
+
+on:
+  # Manual-only for now: this suite runs against a live personal dev org using
+  # repo secrets, so it is triggered on demand rather than on every push/PR.
+  workflow_dispatch:
+
+jobs:
+  # Runs in parallel with the Playwright jobs (no cross-job dependency).
+  apex-tests:
+    name: Apex tests
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Write JWT private key
+        run: |
+          mkdir -p .sfdx-keys
+          printf '%s' "$SF_JWT_KEY" > .sfdx-keys/server.key
+        env:
+          SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
+
+      - name: Authenticate to org (JWT)
+        run: |
+          sf org login jwt \
+            --username "$SF_USERNAME" \
+            --jwt-key-file .sfdx-keys/server.key \
+            --client-id "$SF_CLIENT_ID" \
+            --instance-url "$SF_LOGIN_URL" \
+            --set-default
+        env:
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
+
+      - name: Run Apex tests (check-only deploy)
+        # --dry-run validates the source against the org and runs local Apex
+        # tests without committing any changes to the org.
+        run: |
+          sf project deploy start \
+            --dry-run \
+            --source-dir force-app \
+            --test-level RunLocalTests \
+            --coverage-formatters json \
+            --wait 20
+
+  # Pure REST API tests (the `api` Playwright project). No browser and no
+  # Lightning session, so this is fast and needs no Playwright browser install.
+  # Runs in parallel with apex-tests and the e2e shards.
+  api-tests:
+    name: API tests
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write JWT private key
+        run: |
+          mkdir -p .sfdx-keys
+          printf '%s' "$SF_JWT_KEY" > .sfdx-keys/server.key
+        env:
+          SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
+
+      - name: Run API tests
+        run: npx playwright test --project=api --reporter=list
+        env:
+          SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_LIGHTNING_URL: ${{ secrets.SF_LIGHTNING_URL }}
+          SF_JWT_KEY_FILE: .sfdx-keys/server.key
+
+  # Sharded Playwright run of the UI projects. Each shard is a separate runner in
+  # the matrix and runs in parallel with the others, with apex-tests, and with
+  # api-tests. The `api` project is excluded here — it has its own job above.
+  e2e-tests:
+    name: Playwright E2E (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2]
+        shardTotal: [2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Write JWT private key
+        run: |
+          mkdir -p .sfdx-keys
+          printf '%s' "$SF_JWT_KEY" > .sfdx-keys/server.key
+        env:
+          SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
+
+      - name: Run Playwright tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+        run: npx playwright test --project=setup --project=authenticated --project=auth --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }} --reporter=blob
+        env:
+          SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_LIGHTNING_URL: ${{ secrets.SF_LIGHTNING_URL }}
+          SF_JWT_KEY_FILE: .sfdx-keys/server.key
+
+      - name: Upload blob report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: blob-report/
+          retention-days: 7
+
+      - name: Upload last-run (failed test list)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: last-run-${{ matrix.shardIndex }}
+          path: test-results/.last-run.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Runs only if a shard failed: gathers the failed tests from every shard and
+  # re-runs just those on a clean runner (a retry pass for flaky failures).
+  retry-failed:
+    name: Re-run failed tests
+    if: ${{ failure() }}
+    needs: [e2e-tests]
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Write JWT private key
+        run: |
+          mkdir -p .sfdx-keys
+          printf '%s' "$SF_JWT_KEY" > .sfdx-keys/server.key
+        env:
+          SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
+
+      - name: Download per-shard last-run files
+        uses: actions/download-artifact@v4
+        with:
+          path: last-runs
+          pattern: last-run-*
+
+      - name: Merge failed tests from all shards
+        run: |
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const dir = "last-runs";
+            let failed = [];
+            if (fs.existsSync(dir)) {
+              for (const sub of fs.readdirSync(dir)) {
+                const f = path.join(dir, sub, ".last-run.json");
+                if (fs.existsSync(f)) {
+                  const j = JSON.parse(fs.readFileSync(f, "utf8"));
+                  failed = failed.concat(j.failedTests || []);
+                }
+              }
+            }
+            failed = [...new Set(failed)];
+            fs.writeFileSync("merged-last-run.json", JSON.stringify({ status: failed.length ? "failed" : "passed", failedTests: failed }));
+            console.log("Failed tests to re-run:", failed.length);
+          '
+
+      - name: Re-run failed tests
+        run: npx playwright test --last-failed --last-failed-file merged-last-run.json --reporter=list
+        env:
+          SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
+          SF_LIGHTNING_URL: ${{ secrets.SF_LIGHTNING_URL }}
+          SF_JWT_KEY_FILE: .sfdx-keys/server.key
+
+  # Merges the per-shard blob reports into a single HTML report.
+  merge-reports:
+    name: Merge Playwright report
+    if: ${{ !cancelled() }}
+    needs: [e2e-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download blob reports
+        uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          merge-multiple: true
+
+      - name: Merge into HTML report
+        run: npx playwright merge-reports --reporter html ./all-blob-reports
+
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
