@@ -278,13 +278,15 @@ jobs:
       - name: Fold Apex JUnit into the Allure results
         run: cp apex-junit/*.xml allure-results/ || true
 
-      # Safety net: never publish Playwright traces (they can embed Bearer tokens
-      # and the frontdoor sid). Traces are already off in CI, but strip any that
-      # slip through — plus their attachment references — before the report is built.
-      - name: Strip trace attachments from Allure results
+      # Playwright failure attachments (error-context snapshots, traces) can embed
+      # a live session token — the frontdoor `sid=` URL or a `Bearer` header — which
+      # GitHub push protection blocks from the public gh-pages deploy. Strip trace
+      # files and redact token patterns from every text result before building.
+      - name: Sanitize secrets from Allure results
         run: |
-          find allure-results -type f -name '*.zip' -delete || true
-          find allure-results -type f -name '*trace*' -delete || true
+          find allure-results -type f \( -name '*.zip' -o -name '*trace*' \) -delete || true
+          find allure-results -type f \( -name '*.json' -o -name '*.md' -o -name '*.txt' \) -print0 \
+            | xargs -0 --no-run-if-empty sed -Ei 's/(sid=)[A-Za-z0-9._%!-]+/\1REDACTED/g; s/(Bearer )[A-Za-z0-9._-]+/\1REDACTED/g'
 
       # Restore the previous report history so Allure can render trend graphs.
       # Fails harmlessly on the first run when gh-pages does not exist yet.
