@@ -23,8 +23,12 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   use: {
     baseURL: LIGHTNING_BASE_URL,
-    trace: 'on-first-retry',
-    // Capture a screenshot on failure so the Allure report has visual context.
+    // Traces capture network headers (Bearer tokens) and the frontdoor sid URL,
+    // so they are DISABLED in CI — the Allure report is published to a public
+    // GitHub Pages site and must not leak live session tokens. Kept locally for
+    // debugging. Failure screenshots are token-free (page content only), so they
+    // stay on to give the report visual context.
+    trace: process.env.CI ? 'off' : 'on-first-retry',
     screenshot: 'only-on-failure',
     actionTimeout: 30_000,
     navigationTimeout: 60_000,
