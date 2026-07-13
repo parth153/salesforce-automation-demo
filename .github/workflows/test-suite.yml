@@ -111,22 +111,16 @@ jobs:
           path: allure-results/
           retention-days: 7
 
-  # Sharded Playwright run of the UI projects. Each shard is a separate runner in
-  # the matrix and runs in parallel with the others, with apex-tests, and with
-  # api-tests. The `api` project is excluded here — it has its own job above.
+  # Full Playwright UI suite in one job. Deliberately NOT sharded: the `auth`
+  # project depends on `authenticated`, and Playwright runs a dependency in full
+  # on every shard — so sharding would run the heavy `authenticated` suite on each
+  # shard (doubling load on one dev org) instead of splitting it. Built-in retries
+  # handle flakes: a test that passes on retry stays green; one that fails every
+  # attempt turns the job red, so genuine failures are surfaced (not masked).
   e2e-tests:
-    name: Playwright E2E (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
-    timeout-minutes: 30
+    name: Playwright E2E
+    timeout-minutes: 40
     runs-on: ubuntu-latest
-    # A shard failing does not fail the overall run: the retry-failed job below
-    # re-runs any failures on a clean runner and is the real gate. This keeps the
-    # build green when a flaky UI test passes on retry (shared dev-org timing).
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        shardIndex: [1, 2]
-        shardTotal: [2]
     steps:
       - uses: actions/checkout@v4
 
@@ -148,8 +142,8 @@ jobs:
         env:
           SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
 
-      - name: Run Playwright tests (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
-        run: npx playwright test --project=setup --project=authenticated --project=auth --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Run Playwright UI tests
+        run: npx playwright test --project=setup --project=authenticated --project=auth
         env:
           SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
           SF_USERNAME: ${{ secrets.SF_USERNAME }}
@@ -158,104 +152,21 @@ jobs:
           SF_LIGHTNING_URL: ${{ secrets.SF_LIGHTNING_URL }}
           SF_JWT_KEY_FILE: .sfdx-keys/server.key
 
-      - name: Upload Allure results (shard ${{ matrix.shardIndex }})
+      - name: Upload Allure results (E2E)
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: allure-results-e2e-${{ matrix.shardIndex }}
+          name: allure-results-e2e
           path: allure-results/
           retention-days: 7
 
-      - name: Upload last-run (failed test list)
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: last-run-${{ matrix.shardIndex }}
-          path: test-results/.last-run.json
-          retention-days: 7
-          if-no-files-found: ignore
-
-  # The real E2E gate. Always runs after the shards (which are continue-on-error),
-  # gathers any failed tests from every shard, and re-runs just those on a clean
-  # runner. If there were no failures it re-runs nothing and passes. This job's
-  # result determines whether the E2E stage is green, so a flake that passes on
-  # retry keeps the build green while a genuine failure turns it red.
-  retry-failed:
-    name: Re-run failed tests
-    if: ${{ !cancelled() }}
-    needs: [e2e-tests]
-    timeout-minutes: 30
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: Write JWT private key
-        run: |
-          mkdir -p .sfdx-keys
-          printf '%s' "$SF_JWT_KEY" > .sfdx-keys/server.key
-        env:
-          SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
-
-      - name: Download per-shard last-run files
-        uses: actions/download-artifact@v4
-        with:
-          path: last-runs
-          pattern: last-run-*
-
-      - name: Merge failed tests from all shards
-        id: merge
-        run: |
-          node -e '
-            const fs = require("fs"), path = require("path");
-            const dir = "last-runs";
-            let failed = [];
-            if (fs.existsSync(dir)) {
-              for (const sub of fs.readdirSync(dir)) {
-                const f = path.join(dir, sub, ".last-run.json");
-                if (fs.existsSync(f)) {
-                  const j = JSON.parse(fs.readFileSync(f, "utf8"));
-                  failed = failed.concat(j.failedTests || []);
-                }
-              }
-            }
-            failed = [...new Set(failed)];
-            fs.writeFileSync("merged-last-run.json", JSON.stringify({ status: failed.length ? "failed" : "passed", failedTests: failed }));
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "count=" + failed.length + "\n");
-            console.log("Failed tests to re-run:", failed.length);
-          '
-
-      # Only when there were failures. If the shards were all green this step is
-      # skipped and the job passes, keeping the gate green. Playwright would exit
-      # non-zero on an empty --last-failed set, so we guard rather than run it.
-      - name: Re-run failed tests
-        if: ${{ steps.merge.outputs.count != '0' }}
-        run: npx playwright test --last-failed --last-failed-file merged-last-run.json --reporter=list
-        env:
-          SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
-          SF_USERNAME: ${{ secrets.SF_USERNAME }}
-          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
-          SF_CLIENT_ID: ${{ secrets.SF_CLIENT_ID }}
-          SF_LIGHTNING_URL: ${{ secrets.SF_LIGHTNING_URL }}
-          SF_JWT_KEY_FILE: .sfdx-keys/server.key
-
-  # Collects Allure results from every source (E2E shards, API, Apex JUnit) into
-  # one report, preserves trend history across runs, and publishes it to the
-  # gh-pages branch (served by GitHub Pages).
+  # Collects Allure results from every source (E2E, API, Apex JUnit) into one
+  # report, preserves trend history across runs, and publishes it to the gh-pages
+  # branch (served by GitHub Pages).
   allure-report:
     name: Publish Allure report
     if: ${{ !cancelled() }}
-    needs: [e2e-tests, api-tests, apex-tests, retry-failed]
+    needs: [e2e-tests, api-tests, apex-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: write

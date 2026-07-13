@@ -14,8 +14,9 @@ export default defineConfig({
   // A shared dev org is slow under load and occasionally drops a SPA click, so
   // retry flaky tests and keep concurrency modest to limit org contention.
   retries: process.env.CI ? 2 : 1,
-  // One worker per CI shard: two shards already run concurrently against the
-  // single shared dev org, so a higher per-shard count just adds contention.
+  // Single serial worker in CI: the UI suite runs in one job against a shared
+  // dev org, where extra parallelism just adds contention and flakiness. The
+  // `retries` above cover the occasional load-related flake (green on retry).
   workers: process.env.CI ? 1 : 3,
   // Salesforce Lightning is heavy and slower under parallel load, so allow more
   // time than Playwright's defaults for tests, assertions, and navigations.

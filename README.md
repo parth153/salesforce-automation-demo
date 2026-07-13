@@ -137,9 +137,9 @@ playwright.config.ts     # 3 projects, sharding-ready, tuned for a shared dev or
 
 - **`apex-tests`** — runs the Apex tests via a check-only deploy (parallel, independent).
 - **`api-tests`** — the headless `api` project; the fastest auth/secrets smoke check.
-- **`e2e-tests`** — the Playwright UI suite **sharded across 2 runners** (1 worker each).
-- **`retry-failed`** — the real E2E gate: re-runs any shard failures on a clean runner, so a
-  flake that passes on retry keeps the build green while a genuine failure turns it red.
+- **`e2e-tests`** — the Playwright UI suite in a single job (serial, against one shared dev
+  org). Playwright's built-in `retries` give green-on-retry: a flake that passes on retry
+  stays green, while a test that fails every attempt turns the job red.
 - **`allure-report`** — collects Allure results from every source (E2E + API + Apex JUnit)
   into one report **with trend history** and publishes it to GitHub Pages.
 
