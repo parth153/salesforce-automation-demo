@@ -295,6 +295,14 @@ jobs:
           allure_history: allure-history
           keep_reports: 30
 
+      # The generate action runs in Docker as root, so allure-history (and a
+      # nested .git) is root-owned. Reclaim ownership and drop the stray .git so
+      # the publish step can manage the branch without hitting EACCES.
+      - name: Fix report ownership
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" allure-history
+          rm -rf allure-history/.git
+
       - name: Publish to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
