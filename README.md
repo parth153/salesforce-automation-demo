@@ -1,12 +1,19 @@
 # Salesforce Automation
 
+[![Test Suite](https://github.com/parth153/salesforce-automation-demo/actions/workflows/test-suite.yml/badge.svg)](https://github.com/parth153/salesforce-automation-demo/actions/workflows/test-suite.yml)
+&nbsp;[![Allure Report](https://img.shields.io/badge/Allure-report-9c27b0)](https://parth153.github.io/salesforce-automation-demo/)
+
 End-to-end UI test automation for a Salesforce Developer Edition org using
-[Playwright](https://playwright.dev), plus Apex unit tests for the org's server-side
-code in `force-app`.
+[Playwright](https://playwright.dev), plus a REST API test layer and Apex unit tests for
+the org's server-side code in `force-app`.
+
+📊 **[Live Allure test report](https://parth153.github.io/salesforce-automation-demo/)** — UI, API, and Apex results with trend history, published from CI.
 
 - **33 Playwright E2E scenarios** across 10 functional pillars (Auth, Navigation, Global
   Search, Accounts, Contacts, Cases, Opportunities, Reports & Dashboards, Chatter, Home
   widgets).
+- **18 REST API tests** (the `api` project) — CRUD, SOQL, relationships, error contract,
+  and metadata, straight against the Salesforce REST API.
 - **10 Apex unit tests** across 4 service classes.
 - Authentication via the **OAuth 2.0 JWT Bearer flow** — no interactive login, no emailed
   verification code, works headless in CI.
@@ -118,19 +125,26 @@ playwright.config.ts     # 3 projects, sharding-ready, tuned for a shared dev or
   ([tests/utils/sfApi.ts](tests/utils/sfApi.ts)) and delete them afterward; existing org
   records are only read, never mutated. UI create/delete flows are still exercised through
   the UI.
-- **Config** ([playwright.config.ts](playwright.config.ts)): three projects with dependency
-  ordering (`setup` → `authenticated` → `auth`), a wide viewport (so Lightning nav tabs don't
-  collapse), and generous timeouts / retries tuned for a shared Developer Edition org.
+- **Config** ([playwright.config.ts](playwright.config.ts)): four projects — `api` (headless
+  REST, no browser) plus the UI trio with dependency ordering (`setup` → `authenticated` →
+  `auth`) — a wide viewport (so Lightning nav tabs don't collapse), and generous timeouts /
+  retries tuned for a shared Developer Edition org.
 
 ## Continuous integration
 
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs on push/PR:
+[.github/workflows/test-suite.yml](.github/workflows/test-suite.yml) is **manual-only**
+(`workflow_dispatch`), since it runs against a live personal org with repo secrets:
 
-- **`apex-tests`** — runs the Apex tests (parallel, independent).
-- **`e2e-tests`** — the Playwright suite **sharded across 2 runners** (blob reports).
-- **`merge-reports`** — merges shard reports into one HTML report artifact.
-- **`retry-failed`** — if any shard fails, gathers the failed tests from every shard and
-  re-runs just those on a clean runner.
+- **`apex-tests`** — runs the Apex tests via a check-only deploy (parallel, independent).
+- **`api-tests`** — the headless `api` project; the fastest auth/secrets smoke check.
+- **`e2e-tests`** — the Playwright UI suite **sharded across 2 runners** (1 worker each).
+- **`retry-failed`** — the real E2E gate: re-runs any shard failures on a clean runner, so a
+  flake that passes on retry keeps the build green while a genuine failure turns it red.
+- **`allure-report`** — collects Allure results from every source (E2E + API + Apex JUnit)
+  into one report **with trend history** and publishes it to GitHub Pages.
+
+The report is served from the `gh-pages` branch. One-time setup: **Settings → Pages →
+Build and deployment → Deploy from a branch → `gh-pages` / `root`**.
 
 Configure these repository **secrets**: `SF_LOGIN_URL`, `SF_LIGHTNING_URL`, `SF_USERNAME`,
 `SF_PASSWORD`, `SF_CLIENT_ID`, and `SF_JWT_KEY` (the PEM contents of the private key —

@@ -1,4 +1,5 @@
 import { test as base, request, type APIRequestContext } from '@playwright/test';
+import * as allure from 'allure-js-commons';
 import { getSessionViaJwt, type SfSession } from './utils/jwt-auth';
 
 // The REST API version the suite pins to (matches tests/utils/sfApi.ts).
@@ -20,9 +21,19 @@ type TestFixtures = {
   // Registers a record for automatic teardown at test end (LIFO order, so
   // children are deleted before parents). Use for anything a test leaves behind.
   track: (sobject: string, id: string) => void;
+  // Groups every API spec under an "API" parent suite in the Allure report.
+  allureApiSuite: void;
 };
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
+  allureApiSuite: [
+    async ({}, use) => {
+      await allure.parentSuite('API');
+      await use();
+    },
+    { auto: true },
+  ],
+
   session: [
     async ({}, use) => {
       await use(await getSessionViaJwt());

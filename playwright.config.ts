@@ -7,7 +7,10 @@ const STORAGE_STATE = path.join(__dirname, 'tests/.auth/storageState.json');
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
-  reporter: 'html',
+  // Allure is the primary reporter (published to GitHub Pages); `line` keeps the
+  // console output readable. Each project/job writes to ./allure-results, which
+  // CI collects across shards + the API + Apex jobs into one report.
+  reporter: [['line'], ['allure-playwright', { resultsDir: 'allure-results' }]],
   // A shared dev org is slow under load and occasionally drops a SPA click, so
   // retry flaky tests and keep concurrency modest to limit org contention.
   retries: process.env.CI ? 2 : 1,
@@ -21,6 +24,8 @@ export default defineConfig({
   use: {
     baseURL: LIGHTNING_BASE_URL,
     trace: 'on-first-retry',
+    // Capture a screenshot on failure so the Allure report has visual context.
+    screenshot: 'only-on-failure',
     actionTimeout: 30_000,
     navigationTimeout: 60_000,
     // Wide enough that the Lightning nav bar shows all app tabs instead of

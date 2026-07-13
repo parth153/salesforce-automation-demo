@@ -2,6 +2,8 @@ node_modules/
 .env
 test-results/
 playwright-report/
+allure-results/
+allure-report/
 storageState.json
 .auth/
 .sfdx-keys/
