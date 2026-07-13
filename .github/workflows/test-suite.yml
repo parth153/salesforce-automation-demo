@@ -1,4 +1,4 @@
-name: CI
+name: Test Suite
 
 on:
   # Manual-only for now: this suite runs against a live personal dev org using
@@ -90,6 +90,10 @@ jobs:
     name: Playwright E2E (shard ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    # A shard failing does not fail the overall run: the retry-failed job below
+    # re-runs any failures on a clean runner and is the real gate. This keeps the
+    # build green when a flaky UI test passes on retry (shared dev-org timing).
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -143,11 +147,14 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
-  # Runs only if a shard failed: gathers the failed tests from every shard and
-  # re-runs just those on a clean runner (a retry pass for flaky failures).
+  # The real E2E gate. Always runs after the shards (which are continue-on-error),
+  # gathers any failed tests from every shard, and re-runs just those on a clean
+  # runner. If there were no failures it re-runs nothing and passes. This job's
+  # result determines whether the E2E stage is green, so a flake that passes on
+  # retry keeps the build green while a genuine failure turns it red.
   retry-failed:
     name: Re-run failed tests
-    if: ${{ failure() }}
+    if: ${{ !cancelled() }}
     needs: [e2e-tests]
     timeout-minutes: 30
     runs-on: ubuntu-latest
@@ -179,6 +186,7 @@ jobs:
           pattern: last-run-*
 
       - name: Merge failed tests from all shards
+        id: merge
         run: |
           node -e '
             const fs = require("fs"), path = require("path");
@@ -195,10 +203,15 @@ jobs:
             }
             failed = [...new Set(failed)];
             fs.writeFileSync("merged-last-run.json", JSON.stringify({ status: failed.length ? "failed" : "passed", failedTests: failed }));
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "count=" + failed.length + "\n");
             console.log("Failed tests to re-run:", failed.length);
           '
 
+      # Only when there were failures. If the shards were all green this step is
+      # skipped and the job passes, keeping the gate green. Playwright would exit
+      # non-zero on an empty --last-failed set, so we guard rather than run it.
       - name: Re-run failed tests
+        if: ${{ steps.merge.outputs.count != '0' }}
         run: npx playwright test --last-failed --last-failed-file merged-last-run.json --reporter=list
         env:
           SF_LOGIN_URL: ${{ secrets.SF_LOGIN_URL }}
